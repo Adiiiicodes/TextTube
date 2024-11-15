@@ -6,6 +6,29 @@ body {
     padding: 0;
 }
 
+/* Main header styling */
+.main-header {
+    background-color: #333333;
+    color: #00FFFF;
+    text-align: center;
+    padding: 40px 20px;
+    border: 17px inset #00FFFF;
+    
+}
+
+.main-header h1 {
+    margin: 0;
+    font-size: 36px;
+    font-weight: bold;
+    filter: drop-shadow(8px 0px 12px #32CD32   )
+}
+
+.main-header p {
+    font-size: 18px;
+    font-weight: 300;
+}
+
+
 .container {
     display: flex;
     flex-direction: row;
