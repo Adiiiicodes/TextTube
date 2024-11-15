@@ -24,16 +24,6 @@
       "dest": "app.py"
     }
   ],
-  "rewrites": [
-    {
-      "source": "/progress/(.*)",
-      "destination": "/progress/$1"
-    },
-    {
-      "source": "/transcribe",
-      "destination": "/transcribe"
-    }
-  ],
   "env": {
     "FLASK_ENV": "production"
   }
