@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "app.py",
+      "use": "@vercel/python"
+    },
+    {
+      "src": "static/**/*",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "templates/**/*",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/static/(.*)",
+      "dest": "/static/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "app.py"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/progress/(.*)",
+      "destination": "/progress/$1"
+    },
+    {
+      "source": "/transcribe",
+      "destination": "/transcribe"
+    }
+  ],
+  "env": {
+    "FLASK_ENV": "production"
+  }
+}
