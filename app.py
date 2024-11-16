@@ -1,32 +1,25 @@
 import os
 import json
 import threading
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request, render_template, session
 import yt_dlp
 import whisper
 from pydub import AudioSegment
 
 app = Flask(__name__)
+app.secret_key = os.urandom(24)  # Add secret key for session management
+
+# Global dictionary to store transcription tasks
+transcription_tasks = {}
 
 class TranscriptionStatus:
-    """Singleton class to manage transcription status"""
-    _instance = None
-    _lock = threading.Lock()
-
-    def __new__(cls):
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance.reset()
-        return cls._instance
-
-    def reset(self):
-        self.initialized = False
+    def __init__(self):
+        self.initialized = True
         self.progress = None
         self.transcription = None
         self.error = None
         self.finished = False
+        self._lock = threading.Lock()
 
     def update(self, **kwargs):
         with self._lock:
@@ -44,9 +37,6 @@ class TranscriptionStatus:
                 "finished": self.finished
             }
 
-# Initialize global status manager
-status_manager = TranscriptionStatus()
-
 def load_cookies_from_env():
     try:
         cookies_json = os.environ.get("YOUTUBE_COOKIES", "[]")
@@ -62,14 +52,16 @@ def validate_cookie_from_env():
     return False
 
 class TranscriptionWorker(threading.Thread):
-    def __init__(self, url, model_size):
+    def __init__(self, url, model_size, task_id):
         super().__init__()
         self.url = url
         self.model_size = model_size
-        self.status_manager = TranscriptionStatus()
+        self.task_id = task_id
+        self.status = TranscriptionStatus()
+        transcription_tasks[self.task_id] = self.status
 
     def update_status(self, **kwargs):
-        self.status_manager.update(**kwargs)
+        self.status.update(**kwargs)
 
     def download_audio_with_ytdlp(self, url, output_file="downloaded_audio.wav"):
         cookies = load_cookies_from_env()
@@ -108,7 +100,7 @@ class TranscriptionWorker(threading.Thread):
 
     def run(self):
         try:
-            download_path = "downloaded_audio.wav"
+            download_path = f"downloaded_audio_{self.task_id}.wav"
 
             self.update_status(progress="Starting download...")
             try:
@@ -163,17 +155,20 @@ def transcribe():
         if not validate_cookie_from_env():
             return jsonify({"error": "Invalid or missing cookies"}), 401
 
-        # Reset status manager
-        status_manager.reset()
-        status_manager.update(initialized=True)
+        # Generate a unique task ID
+        task_id = str(hash(video_url + str(os.urandom(8))))
+        
+        # Store task ID in session
+        session['current_task_id'] = task_id
 
         # Start the transcription worker
-        worker = TranscriptionWorker(video_url, model_size)
+        worker = TranscriptionWorker(video_url, model_size, task_id)
         worker.start()
 
         return jsonify({
             "message": "Transcription started",
-            "video_url": video_url
+            "video_url": video_url,
+            "task_id": task_id
         }), 200
 
     except Exception as e:
@@ -181,10 +176,12 @@ def transcribe():
 
 @app.route('/progress')
 def progress():
-    status = status_manager.get_status()
+    task_id = session.get('current_task_id')
     
-    if not status["initialized"]:
+    if not task_id or task_id not in transcription_tasks:
         return jsonify({"error": "No active transcription task"}), 400
+
+    status = transcription_tasks[task_id].get_status()
 
     if status["error"]:
         return jsonify({
@@ -199,6 +196,15 @@ def progress():
         "error": None,
         "finished": status["finished"],
     })
+
+# Cleanup route for completed tasks
+@app.route('/cleanup', methods=['POST'])
+def cleanup():
+    task_id = session.get('current_task_id')
+    if task_id and task_id in transcription_tasks:
+        del transcription_tasks[task_id]
+        session.pop('current_task_id', None)
+    return jsonify({"message": "Cleanup successful"})
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8000))
