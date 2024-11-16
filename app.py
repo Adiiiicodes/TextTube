@@ -8,8 +8,16 @@ from pydub import AudioSegment
 
 app = Flask(__name__)
 
-# Global worker instance
+# Global variables
 worker = None
+worker_status = {
+    "initialized": False,
+    "progress": "No task started",
+    "transcription": None,
+    "error": None,
+    "finished": False,
+}
+
 
 # Load cookies from environment
 def load_cookies_from_env():
@@ -19,6 +27,7 @@ def load_cookies_from_env():
     except json.JSONDecodeError:
         return []
 
+
 # Validate cookies
 def validate_cookie_from_env():
     cookies = load_cookies_from_env()
@@ -27,13 +36,16 @@ def validate_cookie_from_env():
             return True
     return False
 
+
 class WorkerSignals:
     """Signals to communicate between the worker and Flask app."""
+
     def __init__(self):
         self.progress = None
         self.transcription = None
         self.error = None
         self.finished = None
+
 
 class TranscriptionWorker(threading.Thread):
     def __init__(self, url, model_size, signals):
@@ -47,13 +59,9 @@ class TranscriptionWorker(threading.Thread):
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': 'downloaded_audio.%(ext)s',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'wav',
-            }],
-            'cookiefile': None,  # Not needed with in-memory cookies
-            'quiet': True,
+            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'wav'}],
             'cookie_list': cookies,
+            'quiet': True,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -89,15 +97,11 @@ class TranscriptionWorker(threading.Thread):
             self.signals.progress = "Audio processing completed!"
 
             full_transcription = ""
-            chunk_progress = 50
-            progress_per_chunk = 40 / len(audio_chunks)
-
             for i, chunk in enumerate(audio_chunks, 1):
                 self.signals.progress = f"Transcribing part {i} of {len(audio_chunks)}..."
                 transcription = self.transcribe_audio_whisper(chunk)
                 full_transcription += transcription + "\n"
                 os.remove(chunk)
-                chunk_progress += progress_per_chunk
 
             self.signals.transcription = full_transcription
             self.signals.progress = "Transcription completed successfully!"
@@ -110,17 +114,17 @@ class TranscriptionWorker(threading.Thread):
         except Exception as e:
             self.signals.error = str(e)
 
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
+
 @app.route('/transcribe', methods=['POST'])
 def transcribe():
+    global worker, worker_status
     try:
-        print("Received transcribe request")  # Debug log
-        global worker
         video_url = request.json.get('video_url')
-        print(f"Video URL received: {video_url}")  # Debug log
         model_size = request.json.get('model_size', 'base')
 
         if not video_url:
@@ -130,33 +134,38 @@ def transcribe():
         if not validate_cookie_from_env():
             return jsonify({"error": "Invalid or missing cookies"}), 401
 
-        # Prepare signal handler for worker
-        signals = WorkerSignals()
+        # Reset worker and status
+        worker_status = {
+            "initialized": True,
+            "progress": "Task initialized...",
+            "transcription": None,
+            "error": None,
+            "finished": False,
+        }
 
-        # Start the transcription worker in a background thread
+        # Start the transcription worker
+        signals = WorkerSignals()
         worker = TranscriptionWorker(video_url, model_size, signals)
         worker.start()
 
         return jsonify({"message": "Transcription started", "video_url": video_url}), 200
     except Exception as e:
-        print(f"Error in transcribe route: {str(e)}")  # Debug log
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/progress')
 def progress():
-    try:
-        global worker
-        if worker and worker.signals:
-            return jsonify({
-                "progress": worker.signals.progress,
-                "transcription": worker.signals.transcription,
-                "error": worker.signals.error
-            })
-        else:
-            return jsonify({"error": "Worker not initialized"}), 500
-    except Exception as e:
-        print(f"Error in progress route: {str(e)}")  # Debug log
-        return jsonify({"error": str(e)}), 500
+    global worker, worker_status
+    if not worker_status["initialized"]:
+        return jsonify({"error": "No active transcription task"}), 400
+
+    return jsonify({
+        "progress": worker_status.get("progress"),
+        "transcription": worker_status.get("transcription"),
+        "error": worker_status.get("error"),
+        "finished": worker_status.get("finished"),
+    })
+
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 8000))  # Use port from environment if provided
