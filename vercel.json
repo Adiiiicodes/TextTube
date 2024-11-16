@@ -25,6 +25,7 @@
     }
   ],
   "env": {
-    "FLASK_ENV": "production"
+    "FLASK_ENV": "production",
+    "YOUTUBE_COOKIES": "paste_your_cookie_data_here_as_a_JSON_string"
   }
 }
