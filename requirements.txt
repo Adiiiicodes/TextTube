@@ -1,5 +1,4 @@
-Flask
-yt-dlp
+pytube
 whisper
 pydub
-ffmpeg  
+flask
