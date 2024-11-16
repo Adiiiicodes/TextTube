@@ -8,16 +8,45 @@ from pydub import AudioSegment
 
 app = Flask(__name__)
 
-# Global worker status
-worker_status = {
-    "initialized": False,
-    "progress": None,
-    "transcription": None,
-    "error": None,
-    "finished": False
-}
+class TranscriptionStatus:
+    """Singleton class to manage transcription status"""
+    _instance = None
+    _lock = threading.Lock()
 
-# Load cookies from environment
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance.reset()
+        return cls._instance
+
+    def reset(self):
+        self.initialized = False
+        self.progress = None
+        self.transcription = None
+        self.error = None
+        self.finished = False
+
+    def update(self, **kwargs):
+        with self._lock:
+            for key, value in kwargs.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+
+    def get_status(self):
+        with self._lock:
+            return {
+                "initialized": self.initialized,
+                "progress": self.progress,
+                "transcription": self.transcription,
+                "error": self.error,
+                "finished": self.finished
+            }
+
+# Initialize global status manager
+status_manager = TranscriptionStatus()
+
 def load_cookies_from_env():
     try:
         cookies_json = os.environ.get("YOUTUBE_COOKIES", "[]")
@@ -25,35 +54,32 @@ def load_cookies_from_env():
     except json.JSONDecodeError:
         return []
 
-# Validate cookies
 def validate_cookie_from_env():
     cookies = load_cookies_from_env()
     for cookie in cookies:
-        if cookie.get("name") == "LOGIN_INFO":  # Example validation
+        if cookie.get("name") == "LOGIN_INFO":
             return True
     return False
 
-class WorkerSignals:
-    """Signals to communicate between the worker and Flask app."""
-    def __init__(self):
-        self.progress = None
-        self.transcription = None
-        self.error = None
-        self.finished = False
-
 class TranscriptionWorker(threading.Thread):
-    def __init__(self, url, model_size, signals):
+    def __init__(self, url, model_size):
         super().__init__()
         self.url = url
         self.model_size = model_size
-        self.signals = signals
+        self.status_manager = TranscriptionStatus()
+
+    def update_status(self, **kwargs):
+        self.status_manager.update(**kwargs)
 
     def download_audio_with_ytdlp(self, url, output_file="downloaded_audio.wav"):
         cookies = load_cookies_from_env()
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': 'downloaded_audio.%(ext)s',
-            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'wav'}],
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'wav'
+            }],
             'cookie_list': cookies,
             'quiet': True,
         }
@@ -84,37 +110,42 @@ class TranscriptionWorker(threading.Thread):
         try:
             download_path = "downloaded_audio.wav"
 
-            self.signals.progress = "Starting download..."
+            self.update_status(progress="Starting download...")
             try:
                 self.download_audio_with_ytdlp(self.url, download_path)
             except Exception as download_error:
-                self.signals.error = f"Error during download: {download_error}"
-                self.signals.finished = True
-                return  # Stop further processing
+                self.update_status(
+                    error=f"Error during download: {download_error}",
+                    finished=True
+                )
+                return
 
-            self.signals.progress = "Download completed!"
-            self.signals.progress = "Processing audio..."
+            self.update_status(progress="Processing audio...")
             audio_chunks = self.split_audio(download_path)
-            self.signals.progress = "Audio processing completed!"
-
+            
             full_transcription = ""
             for i, chunk in enumerate(audio_chunks, 1):
-                self.signals.progress = f"Transcribing part {i} of {len(audio_chunks)}..."
+                self.update_status(
+                    progress=f"Transcribing part {i} of {len(audio_chunks)}..."
+                )
                 transcription = self.transcribe_audio_whisper(chunk)
                 full_transcription += transcription + "\n"
                 os.remove(chunk)
 
-            self.signals.transcription = full_transcription
-            self.signals.progress = "Transcription completed successfully!"
+            self.update_status(
+                transcription=full_transcription,
+                progress="Transcription completed successfully!",
+                finished=True
+            )
 
             if os.path.exists(download_path):
                 os.remove(download_path)
 
-            self.signals.finished = True
-
         except Exception as e:
-            self.signals.error = f"Unexpected error: {str(e)}"
-            self.signals.finished = True
+            self.update_status(
+                error=f"Unexpected error: {str(e)}",
+                finished=True
+            )
 
 @app.route('/')
 def index():
@@ -123,58 +154,52 @@ def index():
 @app.route('/transcribe', methods=['POST'])
 def transcribe():
     try:
-        global worker_status
         video_url = request.json.get('video_url')
         model_size = request.json.get('model_size', 'base')
 
         if not video_url:
             return jsonify({"error": "No video URL provided"}), 400
 
-        # Validate cookies before proceeding
         if not validate_cookie_from_env():
             return jsonify({"error": "Invalid or missing cookies"}), 401
 
-        # Reset worker status
-        worker_status.update({
-            "initialized": True,
-            "progress": None,
-            "transcription": None,
-            "error": None,
-            "finished": False
-        })
+        # Reset status manager
+        status_manager.reset()
+        status_manager.update(initialized=True)
 
-        # Prepare signal handler for worker
-        signals = WorkerSignals()
-        worker_status.update(vars(signals))
-
-        # Start the transcription worker in a background thread
-        worker = TranscriptionWorker(video_url, model_size, signals)
+        # Start the transcription worker
+        worker = TranscriptionWorker(video_url, model_size)
         worker.start()
 
-        return jsonify({"message": "Transcription started", "video_url": video_url}), 200
+        return jsonify({
+            "message": "Transcription started",
+            "video_url": video_url
+        }), 200
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 @app.route('/progress')
 def progress():
-    global worker_status
-    if not worker_status["initialized"]:
+    status = status_manager.get_status()
+    
+    if not status["initialized"]:
         return jsonify({"error": "No active transcription task"}), 400
 
-    if worker_status["error"]:
+    if status["error"]:
         return jsonify({
-            "progress": worker_status.get("progress"),
-            "error": worker_status.get("error"),
-            "finished": worker_status.get("finished"),
+            "progress": status["progress"],
+            "error": status["error"],
+            "finished": status["finished"],
         }), 500
 
     return jsonify({
-        "progress": worker_status.get("progress"),
-        "transcription": worker_status.get("transcription"),
+        "progress": status["progress"],
+        "transcription": status["transcription"],
         "error": None,
-        "finished": worker_status.get("finished"),
+        "finished": status["finished"],
     })
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 8000))  # Use port from environment if provided
+    port = int(os.environ.get("PORT", 8000))
     app.run(debug=True, port=port)
