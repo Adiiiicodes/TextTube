@@ -5,9 +5,10 @@ from flask import Flask, jsonify, request, render_template, session
 import yt_dlp
 import whisper
 from pydub import AudioSegment
+from datetime import datetime
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)  # Add secret key for session management
+app.secret_key = os.urandom(24)
 
 # Global dictionary to store transcription tasks
 transcription_tasks = {}
@@ -38,18 +39,40 @@ class TranscriptionStatus:
             }
 
 def load_cookies_from_env():
+    """Load and validate cookies from environment variable"""
     try:
-        cookies_json = os.environ.get("YOUTUBE_COOKIES", "[]")
-        return json.loads(cookies_json)
+        cookies_json = os.environ.get("YOUTUBE_COOKIES")
+        if not cookies_json:
+            return []
+        
+        cookies = json.loads(cookies_json)
+        # Validate cookie format
+        required_fields = ['domain', 'name', 'value']
+        for cookie in cookies:
+            if not all(field in cookie for field in required_fields):
+                raise ValueError("Invalid cookie format")
+            
+            # Convert expiration date if exists
+            if 'expirationDate' in cookie:
+                # Ensure it's not expired
+                if float(cookie['expirationDate']) < datetime.now().timestamp():
+                    continue
+        
+        return cookies
     except json.JSONDecodeError:
+        print("Error decoding cookies JSON")
+        return []
+    except Exception as e:
+        print(f"Error loading cookies: {str(e)}")
         return []
 
-def validate_cookie_from_env():
+def validate_cookies():
+    """Validate that necessary cookies are present and not expired"""
     cookies = load_cookies_from_env()
-    for cookie in cookies:
-        if cookie.get("name") == "LOGIN_INFO":
-            return True
-    return False
+    required_cookies = ['__Secure-3PSID', 'LOGIN_INFO']
+    
+    found_cookies = set(cookie['name'] for cookie in cookies)
+    return all(cookie in found_cookies for cookie in required_cookies)
 
 class TranscriptionWorker(threading.Thread):
     def __init__(self, url, model_size, task_id):
@@ -72,9 +95,15 @@ class TranscriptionWorker(threading.Thread):
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'wav'
             }],
-            'cookie_list': cookies,
+            'cookiefile': None,  # Don't use cookie file
+            'cookiesfrombrowser': None,  # Don't use browser cookies
+            'cookie': cookies,  # Use our cookie list directly
             'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'force_generic_extractor': False
         }
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
@@ -107,7 +136,7 @@ class TranscriptionWorker(threading.Thread):
                 self.download_audio_with_ytdlp(self.url, download_path)
             except Exception as download_error:
                 self.update_status(
-                    error=f"Error during download: {download_error}",
+                    error=f"Error during download: {str(download_error)}",
                     finished=True
                 )
                 return
@@ -152,8 +181,8 @@ def transcribe():
         if not video_url:
             return jsonify({"error": "No video URL provided"}), 400
 
-        if not validate_cookie_from_env():
-            return jsonify({"error": "Invalid or missing cookies"}), 401
+        if not validate_cookies():
+            return jsonify({"error": "Invalid or missing YouTube cookies"}), 401
 
         # Generate a unique task ID
         task_id = str(hash(video_url + str(os.urandom(8))))
@@ -197,7 +226,6 @@ def progress():
         "finished": status["finished"],
     })
 
-# Cleanup route for completed tasks
 @app.route('/cleanup', methods=['POST'])
 def cleanup():
     task_id = session.get('current_task_id')
@@ -207,5 +235,10 @@ def cleanup():
     return jsonify({"message": "Cleanup successful"})
 
 if __name__ == '__main__':
+    # Check if cookies are properly configured
+    if not validate_cookies():
+        print("Warning: YouTube cookies are not properly configured!")
+        print("Please set the YOUTUBE_COOKIES environment variable with valid cookies.")
+    
     port = int(os.environ.get("PORT", 8000))
     app.run(debug=True, port=port)
