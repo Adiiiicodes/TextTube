@@ -1,6 +1,6 @@
-flask==2.0.1
-pytube==15.0.0
-whisper==1.0.0
-torch==2.2.0
-numpy==1.21.2
-pydub==0.25.1
+flask
+pytube
+whisper
+torch
+numpy
+pydub
