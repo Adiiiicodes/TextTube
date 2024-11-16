@@ -2,35 +2,16 @@ import os
 import json
 import threading
 from flask import Flask, jsonify, request, render_template, session
-import yt_dlp
+from pytube import YouTube
 import whisper
 from pydub import AudioSegment
 from datetime import datetime
-import requests
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # Global dictionary to store transcription tasks
 transcription_tasks = {}
-
-# Tor proxy setup
-TOR_PROXY = "socks5h://localhost:9050"  # Default Tor SOCKS5 proxy
-proxies = {
-    "http": TOR_PROXY,
-    "https": TOR_PROXY
-}
-
-# Requests session with retries and proxy configuration
-session_requests = requests.Session()
-retries = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
-session_requests.mount('http://', HTTPAdapter(max_retries=retries))
-session_requests.mount('https://', HTTPAdapter(max_retries=retries))
-
-# Set the proxy for all requests
-session_requests.proxies.update(proxies)
 
 class TranscriptionStatus:
     def __init__(self):
@@ -105,30 +86,17 @@ class TranscriptionWorker(threading.Thread):
     def update_status(self, **kwargs):
         self.status.update(**kwargs)
 
-    def download_audio_with_ytdlp(self, url, output_file="downloaded_audio.wav"):
-        cookies = load_cookies_from_env()
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': 'downloaded_audio.%(ext)s',
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'wav'
-            }],
-            'cookiefile': None,  # Don't use cookie file
-            'cookiesfrombrowser': None,  # Don't use browser cookies
-            'cookie': cookies,  # Use our cookie list directly
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': False,
-            'force_generic_extractor': False,
-            'proxy': TOR_PROXY  # Use Tor proxy
-        }
-
+    def download_audio_with_pytube(self, url, output_file="downloaded_audio.wav"):
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
-            if os.path.exists("downloaded_audio.wav"):
-                os.rename("downloaded_audio.wav", output_file)
+            yt = YouTube(url)
+            stream = yt.streams.filter(only_audio=True).first()
+            # Download the audio
+            stream.download(filename="downloaded_audio.mp4")
+
+            # Convert the downloaded audio to WAV using pydub
+            audio = AudioSegment.from_file("downloaded_audio.mp4")
+            audio.export(output_file, format="wav")
+            os.remove("downloaded_audio.mp4")  # Clean up the original download file
         except Exception as e:
             raise Exception(f"Download failed: {str(e)}")
 
@@ -153,7 +121,7 @@ class TranscriptionWorker(threading.Thread):
 
             self.update_status(progress="Starting download...")
             try:
-                self.download_audio_with_ytdlp(self.url, download_path)
+                self.download_audio_with_pytube(self.url, download_path)
             except Exception as download_error:
                 self.update_status(
                     error=f"Error during download: {str(download_error)}",
@@ -206,7 +174,7 @@ def transcribe():
 
         # Generate a unique task ID
         task_id = str(hash(video_url + str(os.urandom(8))))
-
+        
         # Store task ID in session
         session['current_task_id'] = task_id
 
