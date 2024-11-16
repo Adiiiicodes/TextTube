@@ -229,4 +229,4 @@ if __name__ == '__main__':
         print("Please set the YOUTUBE_COOKIES environment variable with valid cookies.")
     
     port = int(os.environ.get("PORT", 8000))
-    app.run(debug=True, port=port)
+    app.run()
