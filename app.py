@@ -1,15 +1,31 @@
-from flask import Flask, jsonify, request, render_template
-import threading
 import os
+import json
+import threading
+from flask import Flask, jsonify, request, render_template
 import yt_dlp
 import whisper
 from pydub import AudioSegment
-import time
 
 app = Flask(__name__)
 
 # Global worker instance
 worker = None
+
+# Load cookies from environment
+def load_cookies_from_env():
+    try:
+        cookies_json = os.environ.get("YOUTUBE_COOKIES", "[]")
+        return json.loads(cookies_json)
+    except json.JSONDecodeError:
+        return []
+
+# Validate cookies
+def validate_cookie_from_env():
+    cookies = load_cookies_from_env()
+    for cookie in cookies:
+        if cookie.get("name") == "LOGIN_INFO":  # Example validation
+            return True
+    return False
 
 class WorkerSignals:
     """Signals to communicate between the worker and Flask app."""
@@ -27,6 +43,7 @@ class TranscriptionWorker(threading.Thread):
         self.signals = signals
 
     def download_audio_with_ytdlp(self, url, output_file="downloaded_audio.wav"):
+        cookies = load_cookies_from_env()
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': 'downloaded_audio.%(ext)s',
@@ -34,7 +51,9 @@ class TranscriptionWorker(threading.Thread):
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'wav',
             }],
+            'cookiefile': None,  # Not needed with in-memory cookies
             'quiet': True,
+            'cookie_list': cookies,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
@@ -82,10 +101,10 @@ class TranscriptionWorker(threading.Thread):
 
             self.signals.transcription = full_transcription
             self.signals.progress = "Transcription completed successfully!"
-            
+
             if os.path.exists(download_path):
                 os.remove(download_path)
-            
+
             self.signals.finished = True
 
         except Exception as e:
@@ -106,6 +125,10 @@ def transcribe():
 
         if not video_url:
             return jsonify({"error": "No video URL provided"}), 400
+
+        # Validate cookies before proceeding
+        if not validate_cookie_from_env():
+            return jsonify({"error": "Invalid or missing cookies"}), 401
 
         # Prepare signal handler for worker
         signals = WorkerSignals()
@@ -136,4 +159,5 @@ def progress():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, port=8000)
+    port = int(os.environ.get("PORT", 8000))  # Use port from environment if provided
+    app.run(debug=True, port=port)
