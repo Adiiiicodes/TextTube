@@ -6,12 +6,31 @@ import yt_dlp
 import whisper
 from pydub import AudioSegment
 from datetime import datetime
+import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 # Global dictionary to store transcription tasks
 transcription_tasks = {}
+
+# Tor proxy setup
+TOR_PROXY = "socks5h://localhost:9050"  # Default Tor SOCKS5 proxy
+proxies = {
+    "http": TOR_PROXY,
+    "https": TOR_PROXY
+}
+
+# Requests session with retries and proxy configuration
+session_requests = requests.Session()
+retries = Retry(total=5, backoff_factor=1, status_forcelist=[500, 502, 503, 504])
+session_requests.mount('http://', HTTPAdapter(max_retries=retries))
+session_requests.mount('https://', HTTPAdapter(max_retries=retries))
+
+# Set the proxy for all requests
+session_requests.proxies.update(proxies)
 
 class TranscriptionStatus:
     def __init__(self):
@@ -101,7 +120,8 @@ class TranscriptionWorker(threading.Thread):
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
-            'force_generic_extractor': False
+            'force_generic_extractor': False,
+            'proxy': TOR_PROXY  # Use Tor proxy
         }
 
         try:
@@ -186,7 +206,7 @@ def transcribe():
 
         # Generate a unique task ID
         task_id = str(hash(video_url + str(os.urandom(8))))
-        
+
         # Store task ID in session
         session['current_task_id'] = task_id
 
